@@ -1,0 +1,22 @@
+# Build output
+build*/
+compile_commands.json
+.cache/
+
+# Market data (multi-GB, download separately -- see README)
+data/
+*.gz
+*.md5sum
+
+# Nasdaq's spec is theirs to distribute; link to it instead
+*.pdf
+
+# Analysis output
+*.csv
+__pycache__/
+.venv/
+
+# Editors
+.vscode/
+.idea/
+*.swp
