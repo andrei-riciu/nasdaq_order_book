@@ -1,10 +1,10 @@
 #pragma once
 
+#include "itch/messages.hpp"
 #include <bit>
 #include <cstdint>
 #include <cstring>
-
-#include "itch/messages.hpp"
+#include <span>
 
 namespace itch::detail {
 
@@ -32,8 +32,7 @@ inline std::array<char, 8> load_stock(const std::uint8_t *p) {
 namespace itch {
 
 // Each parser takes a pointer to the message type byte (offset 0). Offsets
-// below are from the TotalView-ITCH 5.0 spec. Designated initializers make
-
+// below are from the TotalView-ITCH 5.0 spec.
 inline Header parse_header(const std::uint8_t *m) {
   using namespace detail;
   return {
@@ -118,6 +117,104 @@ inline OrderReplace parse_order_replace(const std::uint8_t *m) {
       .shares = load_be<std::uint32_t>(m + 27),
       .price = load_be<std::uint32_t>(m + 31),
   };
+}
+// Does nothing for every message; inherit from it and override only what you
+// need.
+struct NullHandler {
+  void on_system_event(const SystemEvent &) {}
+  void on_add(const AddOrder &) {}
+  void on_stock_directory(const StockDirectory &) {}
+  void on_order_executed(const OrderExecuted &) {}
+  void on_order_executed_with_price(const OrderExecutedWithPrice &) {}
+  void on_order_cancel(const OrderCancel &) {}
+  void on_order_delete(const OrderDelete &) {}
+  void on_order_replace(const OrderReplace &) {}
+  void on_unknown(char /*type*/, std::size_t /*len*/) {}
+};
+
+struct DecodeResult {
+  std::size_t bytes_consumed;
+  std::size_t messages;
+  std::size_t bad_length;
+};
+
+template <class Handler>
+DecodeResult decode(std::span<const std::uint8_t> buf, Handler &h) {
+  std::size_t pos = 0, n = 0, bad = 0;
+
+  while (pos + 2 <= buf.size()) {
+    const auto len = detail::load_be<std::uint16_t>(buf.data() + pos);
+    if (pos + 2 + len > buf.size())
+      break;
+    if (len == 0) {
+      ++bad;
+      pos += 2;
+      continue;
+    }
+    const std::uint8_t *m = buf.data() + pos + 2;
+    switch (m[0]) {
+    case 'A':
+      if (len != AddOrder::length)
+        ++bad;
+      else
+        h.on_add(parse_add_order(m));
+      break;
+    case 'F':
+      if (len != AddOrder::length_mpid)
+        ++bad;
+      else
+        h.on_add(parse_add_order(m));
+      break;
+    case 'S':
+      if (len != SystemEvent::length)
+        ++bad;
+      else
+        h.on_system_event(parse_system_event(m));
+      break;
+    case 'R':
+      if (len != StockDirectory::length)
+        ++bad;
+      else
+        h.on_stock_directory(parse_stock_directory(m));
+      break;
+    case 'E':
+      if (len != OrderExecuted::length)
+        ++bad;
+      else
+        h.on_order_executed(parse_order_executed(m));
+      break;
+    case 'C':
+      if (len != OrderExecutedWithPrice::length)
+        ++bad;
+      else
+        h.on_order_executed_with_price(parse_order_executed_with_price(m));
+      break;
+    case 'X':
+      if (len != OrderCancel::length)
+        ++bad;
+      else
+        h.on_order_cancel(parse_order_cancel(m));
+      break;
+    case 'D':
+      if (len != OrderDelete::length)
+        ++bad;
+      else
+        h.on_order_delete(parse_order_delete(m));
+      break;
+    case 'U':
+      if (len != OrderReplace::length)
+        ++bad;
+      else
+        h.on_order_replace(parse_order_replace(m));
+      break;
+    default:
+      h.on_unknown(static_cast<char>(m[0]), len);
+      break;
+    }
+    pos += 2 + len;
+    ++n;
+  }
+  return {pos, n, bad};
 }
 
 } // namespace itch
