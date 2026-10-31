@@ -27,7 +27,7 @@ target_link_options(itch_flags INTERFACE
   $<${ITCH_SAN}:-fsanitize=address,undefined>
 )
 
-add_library(itch src/decoder.cpp src/book.cpp)
+add_library(itch src/book.cpp src/mapped_file.cpp)
 target_include_directories(itch PUBLIC include)
 target_link_libraries(itch PUBLIC itch_flags)
 
@@ -44,7 +44,7 @@ if(ITCH_BUILD_TESTS)
   FetchContent_MakeAvailable(googletest)
 
   enable_testing()
-  add_executable(itch_tests tests/test_decoder.cpp tests/test_book.cpp)
+  add_executable(itch_tests tests/test_decoder.cpp tests/test_book.cpp tests/test_mapped_file.cpp)
   target_link_libraries(itch_tests PRIVATE itch GTest::gtest_main)
 
   include(GoogleTest)
