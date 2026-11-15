@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <cassert>
+#include <optional>
+#include <vector>
 
 namespace itch {
 
@@ -80,8 +82,68 @@ void OrderBook::on_order_delete(const OrderDelete &m) {
     ++stats_.missing_refs;
     return;
   }
-  Order &o = (orders_.find(m.ref))->second;
+  Order &o = it->second;
 
   reduce(m.ref, o.shares);
 }
+
+void OrderBook::on_order_replace(const OrderReplace &m) {
+  const auto it = orders_.find(m.old_ref);
+  if (it == orders_.end()) {
+    ++stats_.missing_refs;
+    return;
+  }
+  std::uint16_t locate = it->second.locate;
+  char side = it->second.side;
+
+  reduce(m.old_ref, it->second.shares);
+  add(m.new_ref, locate, side, m.shares, m.price);
+}
+
+std::optional<Quote> OrderBook::best_bid(std::uint16_t locate) const {
+  const Levels &bids = books_[locate].bids; // reference: no copy of the map
+  if (bids.empty())
+    return std::nullopt;
+  const auto it = bids.rbegin(); // highest price
+  return Quote{it->first, it->second.shares};
+}
+
+std::optional<Quote> OrderBook::best_ask(std::uint16_t locate) const {
+  const Levels &asks = books_[locate].asks;
+  if (asks.empty())
+    return std::nullopt;
+  const auto it = asks.begin(); // lowest price
+  return Quote{it->first, it->second.shares};
+}
+
+std::optional<std::uint16_t>
+OrderBook::find_locate(std::string_view symbol) const {
+  if (symbol.empty() || symbol.size() > 8)
+    return std::nullopt;
+  std::array<char, 8> key;
+  key.fill(' '); // ITCH alpha fields are right-padded with spaces
+  std::copy(symbol.begin(), symbol.end(), key.begin());
+
+  // Linear scan of 65536 entries: fine for a one-off lookup, not for a hot path.
+  for (std::size_t i = 0; i < symbols_.size(); ++i)
+    if (symbols_[i] == key)
+      return static_cast<std::uint16_t>(i);
+  return std::nullopt;
+}
+
+bool OrderBook::validate() const {
+  // Rebuild every level from scratch using only the order map...
+  std::vector<Book> expected(books_.size());
+  for (const auto &entry : orders_) {
+    const Order &o = entry.second;
+    Book &b = expected[o.locate];
+    Level &lvl = (o.side == 'B' ? b.bids : b.asks)[o.price];
+    lvl.shares += o.shares;
+    ++lvl.orders;
+  }
+  // ...and it must match the incrementally maintained levels exactly
+  // (including: no empty levels left behind).
+  return expected == books_;
+}
+
 } // namespace itch

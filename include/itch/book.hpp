@@ -13,11 +13,13 @@
 namespace itch {
 
 struct Level {
-  std::uint64_t shares = 0;
-  std::uint32_t orders = 0;
+  std::uint64_t shares = 0; // total shares resting at this price
+  std::uint32_t orders = 0; // how many orders make up that total;
 
   bool operator==(const Level &) const = default;
 };
+// struct Level l1,l2;
+// if(l1==l2) instead of if(l1.shares==l2.shares && l1.orders==l2.orders)
 
 using Levels = std::map<std::uint32_t, Level>;
 
@@ -31,6 +33,8 @@ struct Book {
 struct Quote {
   std::uint32_t price;
   std::uint64_t shares;
+
+  bool operator==(const Quote &) const = default;
 };
 
 struct BookStats {
@@ -62,7 +66,7 @@ public:
   const BookStats &stats() const { return stats_; }
 
   // Rebuilds every level from the order map and compares. Slow (O(orders));
-  // for tests and end-of-replay che
+  // for tests and end-of-replay checks.
   bool validate() const;
 
 private:
