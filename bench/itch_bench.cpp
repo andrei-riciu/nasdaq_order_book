@@ -536,7 +536,8 @@ int main(int argc, char **argv) {
       book = time_mode<itch::OrderBook>("book", buf, o, pc, require_clean);
 
     std::println("\nmessages {}", (dec ? dec : book)->messages);
-    std::println("\nthroughput           ns/msg   (median      min      max)   M msg/s");
+    std::println("\n{:<18} {:>8} {:>8} {:>8} {:>10}", "throughput, ns/msg",
+                 "median", "min", "max", "M msg/s");
     if (dec)
       print_row("decode only", *dec);
     if (book)
@@ -546,7 +547,8 @@ int main(int argc, char **argv) {
                    median(book->ns_per_msg) - median(dec->ns_per_msg));
 
     if (pc.ok()) {
-      std::println("\nper message          cycles    instr    IPC  LLC-miss dTLB-miss  br-miss");
+      std::println("\n{:<18} {:>8} {:>8} {:>6} {:>9} {:>9} {:>8}", "per message",
+                   "cycles", "instr", "IPC", "LLC-miss", "dTLB-miss", "br-miss");
       if (dec)
         print_counters("decode only", *dec);
       if (book)
