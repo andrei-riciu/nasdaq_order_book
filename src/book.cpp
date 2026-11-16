@@ -8,7 +8,9 @@
 
 namespace itch {
 
-OrderBook::OrderBook() : books_(65536), symbols_(65536) {}
+OrderBook::OrderBook() : books_(65536), symbols_(65536) {
+  orders_.reserve(4'000'000);
+}
 
 Levels &OrderBook::levels(std::uint16_t locate, char side) {
   Book &b = books_[locate];
@@ -124,7 +126,8 @@ OrderBook::find_locate(std::string_view symbol) const {
   key.fill(' '); // ITCH alpha fields are right-padded with spaces
   std::copy(symbol.begin(), symbol.end(), key.begin());
 
-  // Linear scan of 65536 entries: fine for a one-off lookup, not for a hot path.
+  // Linear scan of 65536 entries: fine for a one-off lookup, not for a hot
+  // path.
   for (std::size_t i = 0; i < symbols_.size(); ++i)
     if (symbols_[i] == key)
       return static_cast<std::uint16_t>(i);

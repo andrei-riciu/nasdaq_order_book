@@ -83,12 +83,13 @@ For comparison, decode alone on NQ-4G: 35 cycles, 41 instructions, IPC 1.15,
 
 | Type | Count | p50 | p90 | p99 | p99.9 | max |
 |---|---|---|---|---|---|---|
-| A (add) | 57.5 M | 165 | 495 | 914 | 1,305 | **35.8 ms** |
-| E (executed) | 2.3 M | 219 | 737 | 1,495 | 1,853 | 12 µs |
-| X (cancel) | 2.6 M | 55 | 332 | 854 | 1,436 | 15 µs |
-| D (delete) | 54.1 M | 180 | 689 | 1,364 | 1,771 | 17 µs |
-| U (replace) | 11.9 M | 385 | 1,074 | 1,547 | 1,948 | 144 µs |
-| all | 128.5 M | 182 | 627 | 1,316 | 1,721 | 35.8 ms |
+| A (add) | 57.5 M | 165 | 495 | 914 | 1,305 | **132.1 ms** |
+| E (executed) | 2.3 M | 219 | 737 | 1,495 | 1,853 | 46.0 µs |
+| C (executed w/ price) | 43 k | 86 | 446 | 1,293 | 1,675 | 5.2 µs |
+| X (cancel) | 2.6 M | 55 | 332 | 854 | 1,436 | 54.1 µs |
+| D (delete) | 54.1 M | 180 | 689 | 1,364 | 1,771 | 62.2 µs |
+| U (replace) | 11.9 M | 385 | 1,074 | 1,547 | 1,948 | 530.0 µs |
+| all | 128.5 M | 182 | 627 | 1,316 | 1,721 | 132.1 ms |
 
 ### Where the time goes (NQ-4G, `perf record`)
 
@@ -124,9 +125,11 @@ By data structure (samples of loads that missed L3, `mem_load_retired.l3_miss`):
   - an order lookup is a bucket load, then a node load, and insert and erase
     also touch a neighbouring node;
   - a level lookup is a pointer chase down a red-black tree.
-- **Tail latency.** The 35.8 ms worst-case add is an `unordered_map` rehash:
-  about 2 M nodes reinserted inside one `on_add`. The 144 µs worst-case
-  replace has the same kind of cause on a smaller scale.
+- **Tail latency.** The 132 ms worst-case add was an `unordered_map` rehash:
+  about 2 M nodes reinserted inside one `on_add`. v1 confirmed this: with the
+  table presized, the worst case fell to 1.2 ms and the worst-case replace
+  fell from 530 µs to 74 µs. The 1.2 ms that remains does not come from a
+  rehash, because none can happen any more; it is unexplained so far.
 - **Duplicate lookup.** `on_order_delete` and `on_order_replace` call `find`,
   then `reduce` calls `find` again on the same ref.
 
@@ -135,7 +138,7 @@ By data structure (samples of loads that missed L3, `mem_load_retired.l3_miss`):
 1. **Orders:** an open-addressing hash table. It is flat, presized to a power
    of two, uses linear probing and backward-shift deletion, and does no
    allocation or rehash during a run. This targets about 54% of the L3 misses
-   and the 35.8 ms tail.
+   and the 132 ms tail.
 2. **Levels:** a sorted `std::vector` per side, best price at the back. This
    targets about 42% of the misses.
 3. **Huge pages** for the order table, against the 4.7 dTLB misses per
@@ -146,4 +149,5 @@ By data structure (samples of loads that missed L3, `mem_load_retired.l3_miss`):
 
 | Version | Change | NQ-4G decode + book | LLC miss/msg | p99 | max |
 |---|---|---|---|---|---|
-| v0 | baseline | 216.8 ns | 9.4 | 1,316 ns | 35.8 ms |
+| v0 | baseline | 216.8 ns | 9.4 | 1,316 ns | 132.1 ms |
+| v1 | `orders_.reserve(4M)`: no rehash during a run | 195.7 ns (−9.7%) | 8.5 | 1,250 ns | 1.2 ms |
