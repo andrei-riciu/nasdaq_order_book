@@ -3,7 +3,6 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <map>
 #include <optional>
 #include <string_view>
 #include <unordered_map>
@@ -13,15 +12,18 @@
 namespace itch {
 
 struct Level {
-  std::uint64_t shares = 0; // total shares resting at this price
+  std::uint32_t price = 0;
   std::uint32_t orders = 0; // how many orders make up that total;
-
+  std::uint64_t shares = 0; // total shares resting at this price
   bool operator==(const Level &) const = default;
 };
 // struct Level l1,l2;
 // if(l1==l2) instead of if(l1.shares==l2.shares && l1.orders==l2.orders)
 
-using Levels = std::map<std::uint32_t, Level>;
+// Sorted so the BEST price is at the back, where almost all activity is:
+//   bids ascending  [150.90, 151.00, 151.10]  back() = highest = best bid
+//   asks descending [151.40, 151.30, 151.25]  back() = lowest  = best ask
+using Levels = std::vector<Level>;
 
 struct Book {
   Levels bids;

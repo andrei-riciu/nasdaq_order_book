@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <algorithm>
 #include <map>
+#include <optional>
 #include <ostream>
 #include <random>
 #include <vector>
@@ -13,6 +15,10 @@ namespace itch {
 // Lets gtest print a Quote in failure messages instead of raw bytes.
 inline void PrintTo(const Quote &q, std::ostream *os) {
   *os << "{price=" << q.price << ", shares=" << q.shares << "}";
+}
+inline void PrintTo(const Level &l, std::ostream *os) {
+  *os << "{price=" << l.price << ", orders=" << l.orders
+      << ", shares=" << l.shares << "}";
 }
 } // namespace itch
 
@@ -63,6 +69,32 @@ bool clean(const BookStats &s) {
   return s.missing_refs == 0 && s.duplicate_refs == 0 && s.overfills == 0;
 }
 
+// The level at `price`, if there is one.
+std::optional<Level> level_at(const Levels &lv, std::uint32_t price) {
+  for (const Level &l : lv)
+    if (l.price == price)
+      return l;
+  return std::nullopt;
+}
+
+// Prices in storage order, to check the layout (best price at the back).
+std::vector<std::uint32_t> prices(const Levels &lv) {
+  std::vector<std::uint32_t> p;
+  for (const Level &l : lv)
+    p.push_back(l.price);
+  return p;
+}
+
+// Expected layout from a price-sorted map: bids ascending, asks descending.
+Levels to_levels(const std::map<std::uint32_t, Level> &m, char side) {
+  Levels lv;
+  for (const auto &[price, l] : m)
+    lv.push_back({.price = price, .orders = l.orders, .shares = l.shares});
+  if (side == 'S')
+    std::ranges::reverse(lv);
+  return lv;
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -81,7 +113,8 @@ TEST(OrderBook, AddsAtSamePriceAccumulate) {
   b.on_add(add(1, 'B', 100, k150));
   b.on_add(add(2, 'B', 200, k150));
 
-  EXPECT_EQ(b.book(kAapl).bids.at(k150), (Level{.shares = 300, .orders = 2}));
+  EXPECT_EQ(level_at(b.book(kAapl).bids, k150),
+            (Level{.price = k150, .orders = 2, .shares = 300}));
   EXPECT_EQ(b.best_bid(kAapl), (Quote{k150, 300}));
   EXPECT_EQ(b.best_ask(kAapl), std::nullopt);
   EXPECT_EQ(b.open_orders(), 2u);
@@ -99,6 +132,68 @@ TEST(OrderBook, BestBidIsHighestBestAskIsLowest) {
   EXPECT_EQ(b.best_ask(kAapl), (Quote{k151 + 5'000, 400}));
   EXPECT_EQ(b.book(kAapl).bids.size(), 2u);
   EXPECT_EQ(b.book(kAapl).asks.size(), 2u);
+  EXPECT_TRUE(b.validate());
+}
+
+// ---------------------------------------------------------------------------
+// Level layout: sorted vectors, best price at the back
+
+TEST(OrderBook, InsertsLevelsAtFrontMiddleAndBack) {
+  OrderBook b;
+  const Levels &bids = b.book(kAapl).bids;
+  const Levels &asks = b.book(kAapl).asks;
+
+  // Bids are stored ascending, so the best (highest) bid is at the back.
+  b.on_add(add(1, 'B', 10, k151));
+  b.on_add(add(2, 'B', 20, k152));          // better: new back
+  b.on_add(add(3, 'B', 30, k150));          // worse than all: new front
+  b.on_add(add(4, 'B', 40, k151 + 5'000));  // in between: middle
+  b.on_add(add(5, 'B', 50, k151));          // existing level: no new entry
+  EXPECT_EQ(prices(bids), (std::vector{k150, k151, k151 + 5'000, k152}));
+  EXPECT_EQ(bids[1], (Level{.price = k151, .orders = 2, .shares = 60}));
+  EXPECT_EQ(bids.front(), (Level{.price = k150, .orders = 1, .shares = 30}));
+  EXPECT_EQ(b.best_bid(kAapl), (Quote{k152, 20}));
+
+  // Asks are stored descending, so the best (lowest) ask is at the back.
+  b.on_add(add(11, 'S', 10, k151));
+  b.on_add(add(12, 'S', 20, k150));         // better: new back
+  b.on_add(add(13, 'S', 30, k152));         // worse than all: new front
+  b.on_add(add(14, 'S', 40, k150 + 5'000)); // in between: middle
+  b.on_add(add(15, 'S', 50, k152));         // existing level at the front
+  EXPECT_EQ(prices(asks), (std::vector{k152, k151, k150 + 5'000, k150}));
+  EXPECT_EQ(asks.front(), (Level{.price = k152, .orders = 2, .shares = 80}));
+  EXPECT_EQ(b.best_ask(kAapl), (Quote{k150, 20}));
+
+  EXPECT_TRUE(b.validate());
+}
+
+TEST(OrderBook, ErasesLevelsAnywhere) {
+  OrderBook b;
+  const Levels &bids = b.book(kAapl).bids;
+  const Levels &asks = b.book(kAapl).asks;
+  const std::uint32_t p[] = {k150, k150 + 2'500, k151, k151 + 2'500};
+  for (std::uint64_t i = 0; i < 4; ++i) {
+    b.on_add(add(1 + i, 'B', 100, p[i]));  // refs 1..4
+    b.on_add(add(11 + i, 'S', 100, p[i])); // refs 11..14
+  }
+
+  b.on_order_delete(del(2)); // a middle bid
+  EXPECT_EQ(prices(bids), (std::vector{p[0], p[2], p[3]}));
+  b.on_order_delete(del(1)); // the worst bid (front)
+  EXPECT_EQ(prices(bids), (std::vector{p[2], p[3]}));
+  b.on_order_executed(exec(4, 100)); // the best bid (back), by execution
+  EXPECT_EQ(prices(bids), (std::vector{p[2]}));
+  EXPECT_EQ(b.best_bid(kAapl), (Quote{p[2], 100}));
+
+  b.on_order_cancel(cancel(13, 100)); // a middle ask
+  EXPECT_EQ(prices(asks), (std::vector{p[3], p[1], p[0]}));
+  b.on_order_delete(del(14)); // the worst ask (front)
+  EXPECT_EQ(prices(asks), (std::vector{p[1], p[0]}));
+  b.on_order_delete(del(11)); // the best ask (back)
+  EXPECT_EQ(prices(asks), (std::vector{p[1]}));
+  EXPECT_EQ(b.best_ask(kAapl), (Quote{p[1], 100}));
+
+  EXPECT_TRUE(clean(b.stats()));
   EXPECT_TRUE(b.validate());
 }
 
@@ -129,7 +224,7 @@ TEST(OrderBook, ExecutionWithPriceReducesAtRestingPrice) {
   b.on_order_executed_with_price(exec_px(1, 40, k151));
 
   EXPECT_EQ(b.best_bid(kAapl), (Quote{k150, 60}));
-  EXPECT_FALSE(b.book(kAapl).bids.contains(k151));
+  EXPECT_EQ(level_at(b.book(kAapl).bids, k151), std::nullopt);
   EXPECT_TRUE(b.validate());
 }
 
@@ -149,7 +244,8 @@ TEST(OrderBook, DeleteRemovesOrderButKeepsSharedLevel) {
   b.on_add(add(2, 'B', 200, k150));
 
   b.on_order_delete(del(1));
-  EXPECT_EQ(b.book(kAapl).bids.at(k150), (Level{.shares = 200, .orders = 1}));
+  EXPECT_EQ(level_at(b.book(kAapl).bids, k150),
+            (Level{.price = k150, .orders = 1, .shares = 200}));
 
   b.on_order_delete(del(2));
   EXPECT_TRUE(b.book(kAapl).bids.empty());
@@ -179,7 +275,8 @@ TEST(OrderBook, ReplaceMovesOrderToNewPriceAndSize) {
 
   b.on_order_replace(replace(1, 10, 300, k151));
 
-  EXPECT_EQ(b.book(kAapl).bids.at(k150), (Level{.shares = 50, .orders = 1}));
+  EXPECT_EQ(level_at(b.book(kAapl).bids, k150),
+            (Level{.price = k150, .orders = 1, .shares = 50}));
   EXPECT_EQ(b.best_bid(kAapl), (Quote{k151, 300}));
   EXPECT_EQ(b.open_orders(), 2u);
 
@@ -234,7 +331,8 @@ TEST(OrderBook, OverfillIsClampedAndCounted) {
 
   EXPECT_EQ(b.stats().overfills, 1u);
   // Only order 1's 100 shares came off; order 2 is untouched.
-  EXPECT_EQ(b.book(kAapl).bids.at(k150), (Level{.shares = 50, .orders = 1}));
+  EXPECT_EQ(level_at(b.book(kAapl).bids, k150),
+            (Level{.price = k150, .orders = 1, .shares = 50}));
   EXPECT_EQ(b.open_orders(), 1u);
   EXPECT_TRUE(b.validate());
 }
@@ -334,14 +432,14 @@ TEST(OrderBook, MatchesNaiveModelOnRandomFlow) {
   auto pick = [&](std::uint64_t n) { return rng() % n; };
 
   auto expected_book = [&](std::uint16_t locate) {
-    Book e;
+    std::map<std::uint32_t, Level> bids, asks;
     for (const auto &[ref, o] : model)
       if (o.locate == locate) {
-        Level &l = (o.side == 'B' ? e.bids : e.asks)[o.price];
+        Level &l = (o.side == 'B' ? bids : asks)[o.price];
         l.shares += o.shares;
         ++l.orders;
       }
-    return e;
+    return Book{.bids = to_levels(bids, 'B'), .asks = to_levels(asks, 'S')};
   };
 
   OrderBook b;

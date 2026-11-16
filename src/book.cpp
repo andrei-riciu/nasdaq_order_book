@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <map>
 #include <optional>
 #include <vector>
 
@@ -17,6 +18,26 @@ Levels &OrderBook::levels(std::uint16_t locate, char side) {
   return side == 'B' ? b.bids : b.asks;
 }
 
+namespace {
+
+// Is price a closer to the top of the book than b, on this side?
+bool better(char side, std::uint32_t a, std::uint32_t b) {
+  return side == 'B' ? a > b : a < b;
+}
+
+// Scan from the back (best price) towards worse prices, skipping every level
+// strictly better than `price`. Returns i such that:
+//   - if i > 0 and lv[i-1].price == price, the level exists at i-1;
+//   - otherwise a new level for `price` belongs at position i.
+std::size_t scan(const Levels &lv, char side, std::uint32_t price) {
+  std::size_t i = lv.size();
+  while (i > 0 && better(side, lv[i - 1].price, price))
+    --i;
+  return i;
+}
+
+} // namespace
+
 void OrderBook::add(std::uint64_t ref, std::uint16_t locate, char side,
                     std::uint32_t shares, std::uint32_t price) {
   const auto [it, inserted] =
@@ -25,9 +46,17 @@ void OrderBook::add(std::uint64_t ref, std::uint16_t locate, char side,
     ++stats_.duplicate_refs; // keep the original; don't double-count shares
     return;
   }
-  Level &lvl = levels(locate, side)[price]; // creates an empty level if new
-  lvl.shares += shares;
-  ++lvl.orders;
+
+  Levels &lvls = levels(locate, side);
+  const std::size_t i = scan(lvls, side, price);
+  if (i > 0 && lvls[i - 1].price == price) {
+    lvls[i - 1].shares += shares;
+    ++lvls[i - 1].orders;
+  } else {
+    lvls.insert(lvls.begin() + i, Level{price, 0, 0}); // new level at i
+    lvls[i].shares += shares;
+    ++lvls[i].orders;
+  }
   stats_.peak_orders = std::max(stats_.peak_orders, orders_.size());
 }
 
@@ -43,16 +72,17 @@ void OrderBook::reduce(std::uint64_t ref, std::uint32_t shares) {
     shares = o.shares; // never let a level go negative
   }
 
-  Levels &side = levels(o.locate, o.side);
-  const auto lvl = side.find(o.price);
-  assert(lvl != side.end() && "order exists but its level does not");
-  lvl->second.shares -= shares;
+  Levels &lvls = levels(o.locate, o.side);
+  const std::size_t i = scan(lvls, o.side, o.price);
+  assert(i > 0 && lvls[i - 1].price == o.price &&
+         "order exists but its level does not");
+  lvls[i - 1].shares -= shares;
   o.shares -= shares;
 
   if (o.shares == 0) {
-    if (--lvl->second.orders == 0) {
-      assert(lvl->second.shares == 0);
-      side.erase(lvl); // no empty levels, so begin()/rbegin() is always real
+    if (--lvls[i - 1].orders == 0) {
+      assert(lvls[i - 1].shares == 0);
+      lvls.erase(lvls.begin() + (i - 1)); // no empty levels: back() is real
     }
     orders_.erase(it); // last: `o` refers into the map
   }
@@ -103,19 +133,19 @@ void OrderBook::on_order_replace(const OrderReplace &m) {
 }
 
 std::optional<Quote> OrderBook::best_bid(std::uint16_t locate) const {
-  const Levels &bids = books_[locate].bids; // reference: no copy of the map
+  const Levels &bids = books_[locate].bids; // reference: no copy
   if (bids.empty())
     return std::nullopt;
-  const auto it = bids.rbegin(); // highest price
-  return Quote{it->first, it->second.shares};
+  const Level &top = bids.back(); // highest price
+  return Quote{top.price, top.shares};
 }
 
 std::optional<Quote> OrderBook::best_ask(std::uint16_t locate) const {
   const Levels &asks = books_[locate].asks;
   if (asks.empty())
     return std::nullopt;
-  const auto it = asks.begin(); // lowest price
-  return Quote{it->first, it->second.shares};
+  const Level &top = asks.back(); // lowest price
+  return Quote{top.price, top.shares};
 }
 
 std::optional<std::uint16_t>
@@ -135,18 +165,33 @@ OrderBook::find_locate(std::string_view symbol) const {
 }
 
 bool OrderBook::validate() const {
-  // Rebuild every level from scratch using only the order map...
-  std::vector<Book> expected(books_.size());
+  // Rebuild every level from the order map alone, using std::map: code that
+  // shares nothing with scan()/add()/reduce(), so a bug there cannot hide by
+  // being repeated here. One map per (locate, side); the map keeps prices sorted.
+  using PriceMap = std::map<std::uint32_t, Level>;
+  std::vector<std::array<PriceMap, 2>> rebuilt(books_.size()); // [0]=bids [1]=asks
   for (const auto &entry : orders_) {
     const Order &o = entry.second;
-    Book &b = expected[o.locate];
-    Level &lvl = (o.side == 'B' ? b.bids : b.asks)[o.price];
+    Level &lvl = rebuilt[o.locate][o.side == 'B' ? 0 : 1][o.price];
+    lvl.price = o.price;
     lvl.shares += o.shares;
     ++lvl.orders;
   }
-  // ...and it must match the incrementally maintained levels exactly
-  // (including: no empty levels left behind).
-  return expected == books_;
+
+  // Lay each one out like the real book (best price at the back) and compare.
+  // Comparing whole vectors also checks the sort order and that no empty
+  // level was left behind.
+  for (std::size_t loc = 0; loc < books_.size(); ++loc) {
+    const auto &[bids, asks] = rebuilt[loc];
+    Book expected;
+    for (const auto &kv : bids) // ascending: highest bid ends up at the back
+      expected.bids.push_back(kv.second);
+    for (auto it = asks.rbegin(); it != asks.rend(); ++it) // descending
+      expected.asks.push_back(it->second);
+    if (expected != books_[loc])
+      return false;
+  }
+  return true;
 }
 
 } // namespace itch
