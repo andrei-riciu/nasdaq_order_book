@@ -34,6 +34,9 @@ target_link_libraries(itch PUBLIC itch_flags)
 add_executable(itch_replay src/main.cpp)
 target_link_libraries(itch_replay PRIVATE itch)
 
+add_executable(itch_bench bench/itch_bench.cpp)
+target_link_libraries(itch_bench PRIVATE itch)
+
 if(ITCH_BUILD_TESTS)
   include(FetchContent)
   FetchContent_Declare(googletest
