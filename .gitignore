@@ -20,3 +20,6 @@ __pycache__/
 .vscode/
 .idea/
 *.swp
+
+# itch_export output
+out/

@@ -130,6 +130,11 @@ By data structure (samples of loads that missed L3, `mem_load_retired.l3_miss`):
   table presized, the worst case fell to 1.2 ms and the worst-case replace
   fell from 530 µs to 74 µs. The 1.2 ms that remains does not come from a
   rehash, because none can happen any more; it is unexplained so far.
+- **v2 (sorted vectors)** cut LLC misses from 8.5 to 6.5 and dTLB misses from
+  4.4 to 1.8 per message, and p99.9 from 1,658 to 978 ns. Its max rose to
+  2.1 ms (add) and 0.2–0.4 ms for the other types. The cause is not identified
+  yet: either a deep-book scan, insert or erase, or the OS interrupting the run
+  as in v1.
 - **Duplicate lookup.** `on_order_delete` and `on_order_replace` call `find`,
   then `reduce` calls `find` again on the same ref.
 
@@ -151,3 +156,4 @@ By data structure (samples of loads that missed L3, `mem_load_retired.l3_miss`):
 |---|---|---|---|---|---|
 | v0 | baseline | 216.8 ns | 9.4 | 1,316 ns | 132.1 ms |
 | v1 | `orders_.reserve(4M)`: no rehash during a run | 195.7 ns (−9.7%) | 8.5 | 1,250 ns | 1.2 ms |
+| v2 | price levels as sorted vectors, best at back | 132.7 ns (−32%) | 6.5 | 696 ns | 2.1 ms |
